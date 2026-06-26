@@ -1046,7 +1046,7 @@ function forwardChampionCards(league) {
 }
 
 function renderLeaderboard() {
-  const rows = topRows(state.leaderboard.league, state.leaderboard.metric, 25);
+  const rows = topRows(state.leaderboard.league, state.leaderboard.metric, 100);
   document.getElementById("leaderboard-view").innerHTML = `
     <div class="data-panel">
       <div class="controls">
@@ -1061,7 +1061,7 @@ function renderLeaderboard() {
         ${state.leaderboard.mode === "Forward Test" ? select("fw-status-filter", ["Resolved", "Pending", "All"], state.forwardStatus) : ""}
         ${state.leaderboard.mode === "Forward Test" ? select("fw-range-filter", ["All Forward", "Last 30 Resolved Days", "Last 7 Resolved Days"], state.forwardRange) : ""}
       </div>
-      ${state.leaderboard.mode === "Backtest" ? `<p class="muted">Sorted by: ${metricLabel(state.leaderboard.metric)}. Grand Backtest is the average of Stock, Tech, and Gold league results.</p>` : ""}
+      ${state.leaderboard.mode === "Backtest" ? `<p class="muted">Showing all 100 oracles. Sorted by: ${metricLabel(state.leaderboard.metric)}. Grand Backtest is the average of Stock, Tech, and Gold league results.</p>` : ""}
       ${state.leaderboard.mode === "Forward Test"
         ? forwardLeaderboardPanel()
         : state.leaderboard.league === "Grand" ? grandLeaderboardTable(rows) : leagueLeaderboardTable(rows)}
@@ -1166,7 +1166,7 @@ function forwardLeaderboardPanel() {
         <div class="metric-card"><span class="muted">Storage</span><strong>localStorage</strong></div>
       </div>
       ${dataStatus.mode === "Synthetic Data" ? `<div class="disclaimer">Warning: resolving forward predictions in Synthetic Data mode is for workflow validation only and does not represent real market performance.</div>` : ""}
-      <p class="muted">Sorted by: ${metricLabel(state.leaderboard.metric)}. Grand Forward is the average of Stock, Tech, and Gold league results, not one compounded three-asset portfolio.</p>
+      <p class="muted">Showing up to all 100 oracles with matching forward data. Sorted by: ${metricLabel(state.leaderboard.metric)}. Grand Forward is the average of Stock, Tech, and Gold league results, not one compounded three-asset portfolio.</p>
       ${state.forwardStatus === "Pending"
         ? predictionLogTable(pendingRows.map((p) => ({ ...p, is_forward: true })))
         : state.leaderboard.league === "Grand" ? forwardGrandLeaderboardTable(rows) : forwardLeaderboardTable(rows)}
@@ -1233,7 +1233,7 @@ function computeForwardLeaderboard(rows, league, metric) {
     };
   }).filter(Boolean);
   const sortMetric = metric === "grandScore" ? "grandForwardScore" : metric;
-  return sortRows(byOracle, sortMetric).slice(0, 50);
+  return sortRows(byOracle, sortMetric).slice(0, 100);
 }
 
 function computeForwardLeagueRow(rows, oracleId, league) {
