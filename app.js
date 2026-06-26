@@ -1091,6 +1091,12 @@ function renderLeaderboard() {
 }
 
 function backtestRacePanel() {
+  let raceMarkup = "";
+  try {
+    raceMarkup = leaderboardRaceSvgMarkup(buildBacktestRaceSeries());
+  } catch (error) {
+    raceMarkup = leaderboardRaceSvgMarkup([], error.message);
+  }
   return `
     <div class="race-panel">
       <div class="race-header">
@@ -1100,7 +1106,7 @@ function backtestRacePanel() {
         </div>
         <span class="badge">${escapeHtml(state.leaderboard.league)} · ${escapeHtml(state.leaderboard.period)}</span>
       </div>
-      <div id="leaderboard-race-svg" class="race-svg"></div>
+      <div id="leaderboard-race-svg" class="race-svg">${raceMarkup}</div>
       <canvas id="leaderboard-race-chart" class="race-chart"></canvas>
     </div>
   `;
@@ -2154,6 +2160,14 @@ function drawLeaderboardRaceChart() {
 function renderLeaderboardRaceSvg(series, errorMessage = "") {
   const target = document.getElementById("leaderboard-race-svg");
   if (!target) return;
+  target.innerHTML = leaderboardRaceSvgMarkup(series, errorMessage);
+}
+
+function lastItem(items) {
+  return items[items.length - 1];
+}
+
+function leaderboardRaceSvgMarkup(series, errorMessage = "") {
   const width = 1200;
   const height = 520;
   const padding = { left: 52, right: 210, top: 28, bottom: 42 };
@@ -2161,8 +2175,7 @@ function renderLeaderboardRaceSvg(series, errorMessage = "") {
   const plotHeight = height - padding.top - padding.bottom;
   const allValues = series.flatMap((item) => item.points.map((point) => point.value)).filter(Number.isFinite);
   if (!series.length || !allValues.length) {
-    target.innerHTML = `<div class="race-empty">${escapeHtml(errorMessage || "Not enough backtest curve data yet.")}</div>`;
-    return;
+    return `<div class="race-empty">${escapeHtml(errorMessage || "Not enough backtest curve data yet.")}</div>`;
   }
   const min = Math.min(...allValues);
   const max = Math.max(...allValues);
@@ -2179,7 +2192,7 @@ function renderLeaderboardRaceSvg(series, errorMessage = "") {
     return `<path d="${d}" class="${className}" stroke="${escapeHtml(item.color)}" />`;
   }).join("");
   const finishers = series
-    .map((item) => ({ ...item, point: item.points.at(-1) }))
+    .map((item) => ({ ...item, point: lastItem(item.points) }))
     .sort((a, b) => b.point.value - a.point.value)
     .slice(0, 10);
   const labels = finishers.map((item, index) => {
@@ -2192,8 +2205,9 @@ function renderLeaderboardRaceSvg(series, errorMessage = "") {
       </g>
     `;
   }).join("");
-  const lastDate = series[0]?.points.at(-1)?.date || "";
-  target.innerHTML = `
+  const firstSeriesPoints = series[0]?.points || [];
+  const lastDate = lastItem(firstSeriesPoints)?.date || "";
+  return `
     <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Backtest race chart with 100 oracle equity curves">
       <rect x="0" y="0" width="${width}" height="${height}" rx="8" class="race-bg" />
       ${grid}
