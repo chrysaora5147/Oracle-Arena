@@ -1084,7 +1084,10 @@ function renderLeaderboard() {
     bindSelect("fw-status-filter", (value) => state.forwardStatus = value);
     bindSelect("fw-range-filter", (value) => state.forwardRange = value);
   }
-  if (state.leaderboard.mode === "Backtest") requestAnimationFrame(drawLeaderboardRaceChart);
+  if (state.leaderboard.mode === "Backtest") {
+    requestAnimationFrame(drawLeaderboardRaceChart);
+    setTimeout(drawLeaderboardRaceChart, 180);
+  }
 }
 
 function backtestRacePanel() {
@@ -2122,8 +2125,14 @@ function drawLeaderboardRaceChart() {
   if (!canvas) return;
   if (leaderboardRaceFrame) cancelAnimationFrame(leaderboardRaceFrame);
   const series = buildBacktestRaceSeries();
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 20 || rect.height < 20) {
+    leaderboardRaceFrame = requestAnimationFrame(drawLeaderboardRaceChart);
+    return;
+  }
+  drawRaceFrame(canvas, series, 1);
   const startedAt = performance.now();
-  const duration = 1800;
+  const duration = 2200;
 
   function frame(now) {
     const progress = Math.min(1, (now - startedAt) / duration);
@@ -2184,9 +2193,9 @@ function drawRaceFrame(canvas, series, progress) {
   series.forEach((item) => {
     const count = Math.min(item.points.length, visiblePoints);
     if (count < 2) return;
-    ctx.globalAlpha = item.rank <= 10 ? 0.86 : 0.18;
-    ctx.strokeStyle = item.rank <= 10 ? item.color : "rgba(217,209,198,0.36)";
-    ctx.lineWidth = item.rank <= 10 ? 2.2 : 0.9;
+    ctx.globalAlpha = item.rank <= 10 ? 0.98 : 0.34;
+    ctx.strokeStyle = item.rank <= 10 ? item.color : "rgba(217,209,198,0.48)";
+    ctx.lineWidth = item.rank <= 10 ? 2.8 : 1.2;
     ctx.beginPath();
     for (let i = 0; i < count; i += 1) {
       const point = item.points[i];
