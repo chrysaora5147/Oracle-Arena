@@ -263,6 +263,9 @@ assert.ok(appSource.includes("function drawLeaderboardRaceChart"));
 assert.ok(appSource.includes("function renderLeaderboardRaceSvg"));
 assert.ok(appSource.includes("function leaderboardRaceSvgMarkup"));
 assert.ok(appSource.includes('raceMarkup = leaderboardRaceSvgMarkup(buildBacktestRaceSeries())'));
+assert.ok(appSource.includes("function raceValueExtent"));
+assert.ok(!appSource.includes("Math.min(...allValues)"));
+assert.ok(!appSource.includes("Math.max(...allValues)"));
 
 const pureRandomSignals = [];
 const pureRandomDates = Array.from({ length: 260 }, (_, index) => {

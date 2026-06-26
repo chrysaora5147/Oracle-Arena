@@ -2117,9 +2117,35 @@ function buildBacktestRaceSeries() {
       oracleName: row.oracleName,
       family: row.family,
       color: oracleColor(index),
-      points,
+      points: downsamplePoints(points, 320),
     };
   }).filter((series) => series.points.length >= 2);
+}
+
+function downsamplePoints(points, maxPoints) {
+  if (points.length <= maxPoints) return points;
+  const out = [];
+  const lastIndex = points.length - 1;
+  for (let i = 0; i < maxPoints; i += 1) {
+    const index = Math.round((i / (maxPoints - 1)) * lastIndex);
+    out.push(points[index]);
+  }
+  return out;
+}
+
+function raceValueExtent(series) {
+  let min = Infinity;
+  let max = -Infinity;
+  let count = 0;
+  series.forEach((item) => {
+    item.points.forEach((point) => {
+      if (!Number.isFinite(point.value)) return;
+      min = Math.min(min, point.value);
+      max = Math.max(max, point.value);
+      count += 1;
+    });
+  });
+  return { min, max, count };
 }
 
 function oracleColor(index) {
@@ -2173,12 +2199,11 @@ function leaderboardRaceSvgMarkup(series, errorMessage = "") {
   const padding = { left: 52, right: 210, top: 28, bottom: 42 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const allValues = series.flatMap((item) => item.points.map((point) => point.value)).filter(Number.isFinite);
-  if (!series.length || !allValues.length) {
+  const extent = raceValueExtent(series);
+  if (!series.length || !extent.count) {
     return `<div class="race-empty">${escapeHtml(errorMessage || "Not enough backtest curve data yet.")}</div>`;
   }
-  const min = Math.min(...allValues);
-  const max = Math.max(...allValues);
+  const { min, max } = extent;
   const span = Math.max(0.001, max - min);
   const xAt = (index, total) => padding.left + (index / Math.max(1, total - 1)) * plotWidth;
   const yAt = (value) => padding.top + (1 - (value - min) / span) * plotHeight;
@@ -2237,16 +2262,15 @@ function drawRaceFrame(canvas, series, progress) {
   const padding = { left: 52, right: 188, top: 28, bottom: 42 };
   const plotWidth = Math.max(1, rect.width - padding.left - padding.right);
   const plotHeight = Math.max(1, rect.height - padding.top - padding.bottom);
-  const allValues = series.flatMap((item) => item.points.map((point) => point.value)).filter(Number.isFinite);
-  if (!series.length || !allValues.length) {
+  const extent = raceValueExtent(series);
+  if (!series.length || !extent.count) {
     ctx.fillStyle = "#d9d1c6";
     ctx.font = "13px system-ui";
     ctx.fillText("Not enough backtest curve data", 18, rect.height / 2);
     return;
   }
 
-  const min = Math.min(...allValues);
-  const max = Math.max(...allValues);
+  const { min, max } = extent;
   const span = Math.max(0.001, max - min);
   const longest = Math.max(...series.map((item) => item.points.length));
   const visiblePoints = Math.max(2, Math.floor((longest - 1) * progress) + 1);
@@ -2351,9 +2375,8 @@ function drawLines(canvas, series) {
     return;
   }
 
-  const allValues = cleanSeries.flatMap((s) => s.points.map((p) => p.value));
-  const min = Math.min(...allValues);
-  const max = Math.max(...allValues);
+  const extent = raceValueExtent(cleanSeries);
+  const { min, max } = extent;
   const span = Math.max(0.001, max - min);
   cleanSeries.forEach((s) => {
     ctx.strokeStyle = s.color;
