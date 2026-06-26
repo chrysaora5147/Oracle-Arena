@@ -74,6 +74,7 @@ let days = [];
 let prices = {};
 let perf = { leagueRows: [], grandRows: [], predictions: [], curves: new Map(), periods: {} };
 let forwardLog = [];
+let leaderboardRaceFrame = 0;
 let dataStatus = {
   mode: "Loading",
   assetCount: 0,
@@ -1064,7 +1065,7 @@ function renderLeaderboard() {
       ${state.leaderboard.mode === "Backtest" ? `<p class="muted">Showing all 100 oracles. Sorted by: ${metricLabel(state.leaderboard.metric)}. Grand Backtest is the average of Stock, Tech, and Gold league results.</p>` : ""}
       ${state.leaderboard.mode === "Forward Test"
         ? forwardLeaderboardPanel()
-        : state.leaderboard.league === "Grand" ? grandLeaderboardTable(rows) : leagueLeaderboardTable(rows)}
+        : `${backtestRacePanel()}${state.leaderboard.league === "Grand" ? grandLeaderboardTable(rows) : leagueLeaderboardTable(rows)}`}
     </div>
   `;
 
@@ -1083,6 +1084,22 @@ function renderLeaderboard() {
     bindSelect("fw-status-filter", (value) => state.forwardStatus = value);
     bindSelect("fw-range-filter", (value) => state.forwardRange = value);
   }
+  if (state.leaderboard.mode === "Backtest") requestAnimationFrame(drawLeaderboardRaceChart);
+}
+
+function backtestRacePanel() {
+  return `
+    <div class="race-panel">
+      <div class="race-header">
+        <div>
+          <h2>Backtest Race Chart</h2>
+          <p class="muted">100 oracles running through the selected backtest period. Top finishers are brighter and labeled at the finish line.</p>
+        </div>
+        <span class="badge">${escapeHtml(state.leaderboard.league)} · ${escapeHtml(state.leaderboard.period)}</span>
+      </div>
+      <canvas id="leaderboard-race-chart" class="race-chart"></canvas>
+    </div>
+  `;
 }
 
 function leagueLeaderboardTable(rows) {
@@ -2065,6 +2082,155 @@ function drawForwardProfileChart(oracleId) {
     { label: "Forward Strategy", color: "#d6ad55", points: strategyPoints },
     { label: "Forward Benchmark", color: "#71b7d8", points: benchmarkPoints },
   ]);
+}
+
+function buildBacktestRaceSeries() {
+  const periodPerf = perf.periods[state.leaderboard.period] || perf;
+  const rows = sortRows(
+    state.leaderboard.league === "Grand"
+      ? periodPerf.grandRows
+      : periodPerf.leagueRows.filter((row) => row.league === state.leaderboard.league),
+    state.leaderboard.metric,
+  );
+  return rows.map((row, index) => {
+    const leagueCurves = state.leaderboard.league === "Grand"
+      ? ASSETS.map((asset) => periodPerf.curves.get(`${row.oracleId}:${asset.league}`)).filter(Boolean)
+      : [periodPerf.curves.get(`${row.oracleId}:${state.leaderboard.league}`)].filter(Boolean);
+    const pointCount = Math.min(...leagueCurves.map((curve) => curve.length));
+    const points = Array.from({ length: pointCount }, (_, pointIndex) => ({
+      date: leagueCurves[0][pointIndex].date,
+      value: average(leagueCurves.map((curve) => curve[pointIndex]?.value).filter(Number.isFinite)),
+    })).filter((point) => Number.isFinite(point.value));
+    return {
+      rank: index + 1,
+      oracleId: row.oracleId,
+      oracleName: row.oracleName,
+      family: row.family,
+      color: oracleColor(index),
+      points,
+    };
+  }).filter((series) => series.points.length >= 2);
+}
+
+function oracleColor(index) {
+  const hue = (index * 137.508) % 360;
+  return `hsl(${hue} 72% 66%)`;
+}
+
+function drawLeaderboardRaceChart() {
+  const canvas = document.getElementById("leaderboard-race-chart");
+  if (!canvas) return;
+  if (leaderboardRaceFrame) cancelAnimationFrame(leaderboardRaceFrame);
+  const series = buildBacktestRaceSeries();
+  const startedAt = performance.now();
+  const duration = 1800;
+
+  function frame(now) {
+    const progress = Math.min(1, (now - startedAt) / duration);
+    drawRaceFrame(canvas, series, easeOutCubic(progress));
+    if (progress < 1) leaderboardRaceFrame = requestAnimationFrame(frame);
+  }
+
+  leaderboardRaceFrame = requestAnimationFrame(frame);
+}
+
+function easeOutCubic(value) {
+  return 1 - (1 - value) ** 3;
+}
+
+function drawRaceFrame(canvas, series, progress) {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  const padding = { left: 52, right: 188, top: 28, bottom: 42 };
+  const plotWidth = Math.max(1, rect.width - padding.left - padding.right);
+  const plotHeight = Math.max(1, rect.height - padding.top - padding.bottom);
+  const allValues = series.flatMap((item) => item.points.map((point) => point.value)).filter(Number.isFinite);
+  if (!series.length || !allValues.length) {
+    ctx.fillStyle = "#d9d1c6";
+    ctx.font = "13px system-ui";
+    ctx.fillText("Not enough backtest curve data", 18, rect.height / 2);
+    return;
+  }
+
+  const min = Math.min(...allValues);
+  const max = Math.max(...allValues);
+  const span = Math.max(0.001, max - min);
+  const longest = Math.max(...series.map((item) => item.points.length));
+  const visiblePoints = Math.max(2, Math.floor((longest - 1) * progress) + 1);
+  const xAt = (index, total) => padding.left + (index / Math.max(1, total - 1)) * plotWidth;
+  const yAt = (value) => padding.top + (1 - (value - min) / span) * plotHeight;
+
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i += 1) {
+    const y = padding.top + (i / 4) * plotHeight;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(rect.width - padding.right + 24, y);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "#a9a39a";
+  ctx.font = "12px system-ui";
+  ctx.fillText(fmtPct(min - 1, 0), 8, yAt(min) + 4);
+  ctx.fillText(fmtPct(max - 1, 0), 8, yAt(max) + 4);
+
+  series.forEach((item) => {
+    const count = Math.min(item.points.length, visiblePoints);
+    if (count < 2) return;
+    ctx.globalAlpha = item.rank <= 10 ? 0.86 : 0.18;
+    ctx.strokeStyle = item.rank <= 10 ? item.color : "rgba(217,209,198,0.36)";
+    ctx.lineWidth = item.rank <= 10 ? 2.2 : 0.9;
+    ctx.beginPath();
+    for (let i = 0; i < count; i += 1) {
+      const point = item.points[i];
+      const x = xAt(i, item.points.length);
+      const y = yAt(point.value);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+
+  const finishers = series
+    .map((item) => {
+      const index = Math.min(item.points.length - 1, visiblePoints - 1);
+      return { ...item, point: item.points[index] };
+    })
+    .sort((a, b) => b.point.value - a.point.value)
+    .slice(0, 10);
+
+  finishers.forEach((item, index) => {
+    const pointIndex = Math.min(item.points.length - 1, visiblePoints - 1);
+    const x = xAt(pointIndex, item.points.length);
+    const y = yAt(item.point.value);
+    ctx.fillStyle = item.color;
+    ctx.beginPath();
+    ctx.arc(x, y, item.rank <= 3 ? 4.5 : 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    const labelY = padding.top + index * 24 + 8;
+    ctx.fillStyle = index < 3 ? "#f5f1e8" : "#d9d1c6";
+    ctx.font = `${index < 3 ? 700 : 500} 12px system-ui`;
+    ctx.fillText(`#${item.rank} ${item.oracleName.slice(0, 20)}`, rect.width - padding.right + 38, labelY);
+    ctx.fillStyle = item.point.value >= 1 ? "#7ccf91" : "#ee7e78";
+    ctx.fillText(fmtPct(item.point.value - 1, 0), rect.width - 56, labelY);
+  });
+
+  const dateSeries = series[0]?.points || [];
+  const dateIndex = Math.min(dateSeries.length - 1, visiblePoints - 1);
+  ctx.fillStyle = "#d6ad55";
+  ctx.font = "700 13px system-ui";
+  ctx.fillText(dateSeries[dateIndex]?.date || "", padding.left, rect.height - 16);
+  ctx.fillStyle = "#a9a39a";
+  ctx.font = "12px system-ui";
+  ctx.fillText(`${series.length} oracles`, rect.width - padding.right + 38, rect.height - 16);
 }
 
 function drawLines(canvas, series) {

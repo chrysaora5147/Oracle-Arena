@@ -257,6 +257,8 @@ assert.ok(appSource.includes('const confidence = isPureRandomGrandpa ? 0.5'));
 assert.ok(appSource.includes("!isPureRandomGrandpa) score += bias"));
 assert.ok(appSource.includes("topRows(state.leaderboard.league, state.leaderboard.metric, 100)"));
 assert.ok(appSource.includes("sortRows(byOracle, sortMetric).slice(0, 100)"));
+assert.ok(appSource.includes('id="leaderboard-race-chart"'));
+assert.ok(appSource.includes("function drawLeaderboardRaceChart"));
 
 const pureRandomSignals = [];
 const pureRandomDates = Array.from({ length: 260 }, (_, index) => {
