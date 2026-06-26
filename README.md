@@ -58,6 +58,18 @@ date,open,high,low,close,adjClose,volume
 
 The script safe-writes by merging rows, deduplicating dates, sorting ascending, validating, writing a temp file, and replacing the original only after validation. If the endpoint returns adjusted close, `adjClose` uses it; otherwise the script falls back to `close`.
 
+## Automatic Price Updates
+
+GitHub Actions runs `.github/workflows/update-prices.yml` automatically on weekdays at `23:30 UTC`, intentionally after the regular US market close. The workflow:
+
+1. Runs `node scripts/update-prices.js`.
+2. Runs `node scripts/verify-prices.js`.
+3. Commits changed `data/prices/*.csv` files.
+4. Pushes to `main`.
+5. Lets Vercel's Git integration redeploy the static site from the new CSV snapshot.
+
+This is a daily snapshot update, not a real-time price feed.
+
 ## Daily Tournament Workflow
 
 1. Update prices: `npm run prices:update`.
@@ -81,7 +93,7 @@ This is a static app. Vercel can deploy the folder directly.
 - Output directory: `.`
 - Runtime backend: none
 
-The deployed site uses the committed CSV snapshot. Automated price updates require a later scheduled workflow or manual CSV refresh plus redeploy.
+The deployed site uses the committed CSV snapshot. The included GitHub Actions workflow can update the CSV snapshot on weekdays and trigger a Vercel redeploy through Git integration.
 
 ## Methodology
 
@@ -156,11 +168,10 @@ Manual smoke checklist:
 - Yahoo Finance or any public price source may fail, lag, or change format.
 - CSV data quality directly affects results.
 - localStorage can be lost.
-- Static Vercel deployment does not automatically update CSV unless a later automation is added.
+- Prices update through GitHub Actions on a weekday schedule, not continuously or intraday.
 
 ## Next Steps
 
-- GitHub Actions daily price update.
 - Supabase or persistent forward storage.
 - Automated forward batch creation.
 - Public champion archive pages.
