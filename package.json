@@ -1,0 +1,13 @@
+{
+  "name": "oracle-arena",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Oracle Arena: 100 symbolic market oracles compete across SPY, QQQ, and GLD using BUY/CASH signals.",
+  "scripts": {
+    "dev": "python3 -m http.server 4174",
+    "check": "node --check app.js && node verify-engine.js && node --check scripts/update-prices.js && node --check scripts/verify-prices.js",
+    "prices:update": "node scripts/update-prices.js",
+    "prices:verify": "node scripts/verify-prices.js",
+    "verify": "npm run check && npm run prices:verify"
+  }
+}
