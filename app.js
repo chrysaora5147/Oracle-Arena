@@ -1100,6 +1100,7 @@ function backtestRacePanel() {
         </div>
         <span class="badge">${escapeHtml(state.leaderboard.league)} · ${escapeHtml(state.leaderboard.period)}</span>
       </div>
+      <div id="leaderboard-race-svg" class="race-svg"></div>
       <canvas id="leaderboard-race-chart" class="race-chart"></canvas>
     </div>
   `;
@@ -2117,14 +2118,21 @@ function buildBacktestRaceSeries() {
 
 function oracleColor(index) {
   const hue = (index * 137.508) % 360;
-  return `hsl(${hue} 72% 66%)`;
+  return `hsl(${Math.round(hue)}, 72%, 66%)`;
 }
 
 function drawLeaderboardRaceChart() {
+  if (leaderboardRaceFrame) cancelAnimationFrame(leaderboardRaceFrame);
+  let series = [];
+  try {
+    series = buildBacktestRaceSeries();
+  } catch (error) {
+    renderLeaderboardRaceSvg([], error.message);
+    return;
+  }
+  renderLeaderboardRaceSvg(series);
   const canvas = document.getElementById("leaderboard-race-chart");
   if (!canvas) return;
-  if (leaderboardRaceFrame) cancelAnimationFrame(leaderboardRaceFrame);
-  const series = buildBacktestRaceSeries();
   const rect = canvas.getBoundingClientRect();
   if (rect.width < 20 || rect.height < 20) {
     leaderboardRaceFrame = requestAnimationFrame(drawLeaderboardRaceChart);
@@ -2141,6 +2149,62 @@ function drawLeaderboardRaceChart() {
   }
 
   leaderboardRaceFrame = requestAnimationFrame(frame);
+}
+
+function renderLeaderboardRaceSvg(series, errorMessage = "") {
+  const target = document.getElementById("leaderboard-race-svg");
+  if (!target) return;
+  const width = 1200;
+  const height = 520;
+  const padding = { left: 52, right: 210, top: 28, bottom: 42 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const allValues = series.flatMap((item) => item.points.map((point) => point.value)).filter(Number.isFinite);
+  if (!series.length || !allValues.length) {
+    target.innerHTML = `<div class="race-empty">${escapeHtml(errorMessage || "Not enough backtest curve data yet.")}</div>`;
+    return;
+  }
+  const min = Math.min(...allValues);
+  const max = Math.max(...allValues);
+  const span = Math.max(0.001, max - min);
+  const xAt = (index, total) => padding.left + (index / Math.max(1, total - 1)) * plotWidth;
+  const yAt = (value) => padding.top + (1 - (value - min) / span) * plotHeight;
+  const grid = Array.from({ length: 5 }, (_, index) => {
+    const y = padding.top + (index / 4) * plotHeight;
+    return `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right + 24}" y2="${y}" class="race-grid-line" />`;
+  }).join("");
+  const paths = series.map((item) => {
+    const d = item.points.map((point, index) => `${index === 0 ? "M" : "L"}${xAt(index, item.points.length).toFixed(1)},${yAt(point.value).toFixed(1)}`).join(" ");
+    const className = item.rank <= 10 ? "race-path race-path-top" : "race-path race-path-pack";
+    return `<path d="${d}" class="${className}" stroke="${escapeHtml(item.color)}" />`;
+  }).join("");
+  const finishers = series
+    .map((item) => ({ ...item, point: item.points.at(-1) }))
+    .sort((a, b) => b.point.value - a.point.value)
+    .slice(0, 10);
+  const labels = finishers.map((item, index) => {
+    const y = padding.top + index * 24 + 8;
+    return `
+      <g>
+        <circle cx="${width - padding.right + 28}" cy="${y - 4}" r="${index < 3 ? 4.5 : 3.5}" fill="${escapeHtml(item.color)}" />
+        <text x="${width - padding.right + 40}" y="${y}" class="${index < 3 ? "race-label top" : "race-label"}">#${item.rank} ${escapeHtml(item.oracleName.slice(0, 22))}</text>
+        <text x="${width - 58}" y="${y}" class="${item.point.value >= 1 ? "race-return positive-fill" : "race-return negative-fill"}">${fmtPct(item.point.value - 1, 0)}</text>
+      </g>
+    `;
+  }).join("");
+  const lastDate = series[0]?.points.at(-1)?.date || "";
+  target.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Backtest race chart with 100 oracle equity curves">
+      <rect x="0" y="0" width="${width}" height="${height}" rx="8" class="race-bg" />
+      ${grid}
+      <text x="8" y="${yAt(max) + 4}" class="race-axis">${fmtPct(max - 1, 0)}</text>
+      <text x="8" y="${yAt(min) + 4}" class="race-axis">${fmtPct(min - 1, 0)}</text>
+      ${paths}
+      ${labels}
+      <text x="${padding.left}" y="${height - 16}" class="race-date">${escapeHtml(lastDate)}</text>
+      <text x="${width - padding.right + 40}" y="${height - 16}" class="race-axis">${series.length} oracles</text>
+    </svg>
+  `;
 }
 
 function easeOutCubic(value) {
