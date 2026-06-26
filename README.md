@@ -149,6 +149,15 @@ node --check scripts/verify-prices.js
 node scripts/verify-prices.js
 ```
 
+`verify-engine.js` includes a full oracle signal audit. It loads the production oracle logic from `app.js`, generates the deterministic synthetic backtest range, and checks all 100 oracles across SPY, QQQ, and GLD after the warmup window. The audit fails if an oracle emits invalid schema fields, returns non-finite indicator values, becomes constant BUY/CASH, has a BUY ratio below 5% or above 95%, breaks the #69 pure-random baseline, or makes #18 Fibonacci always true again.
+
+Audit thresholds:
+
+- Normal oracle BUY ratio must stay between 5% and 95% per asset.
+- Oracle #69 must stay between 40% and 60% BUY across all assets and confidence must remain exactly `0.50`.
+- Oracle #18 must produce both BUY and CASH and `fibonacciLike()` must not be always true over days 1..366.
+- Chart-shadow oracles #91-#100 are checked for balanced signals and finite indicator outputs using only data available through the prediction date.
+
 Manual smoke checklist:
 
 1. App opens.

@@ -354,6 +354,10 @@ function valueOr(value, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function finiteOr(value, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 function intersectDates(dateLists) {
   const [first, ...rest] = dateLists.map((list) => new Set(list));
   return [...first].filter((date) => rest.every((set) => set.has(date))).sort();
@@ -361,18 +365,20 @@ function intersectDates(dateLists) {
 
 function priceContext(asset, dateIndex) {
   const series = prices[asset.symbol];
-  const close = series[dateIndex].adjustedClose;
-  const prior = series[Math.max(0, dateIndex - 1)].adjustedClose;
-  const three = series[Math.max(0, dateIndex - 3)].adjustedClose;
-  const five = series[Math.max(0, dateIndex - 5)].adjustedClose;
-  const twenty = series[Math.max(0, dateIndex - 20)].adjustedClose;
+  const current = series?.[dateIndex] || series?.[0] || { date: "1970-01-01", adjustedClose: 1, close: 1 };
+  const close = finiteOr(current.adjustedClose ?? current.adjClose ?? current.close, 1);
+  const prior = finiteOr(series?.[Math.max(0, dateIndex - 1)]?.adjustedClose, close);
+  const three = finiteOr(series?.[Math.max(0, dateIndex - 3)]?.adjustedClose, close);
+  const five = finiteOr(series?.[Math.max(0, dateIndex - 5)]?.adjustedClose, close);
+  const twenty = finiteOr(series?.[Math.max(0, dateIndex - 20)]?.adjustedClose, close);
+  const safeRatio = (base) => base > 0 ? close / base - 1 : 0;
   return {
     close,
-    oneDay: close / prior - 1,
-    threeDay: close / three - 1,
-    fiveDay: close / five - 1,
-    twentyDay: close / twenty - 1,
-    dayOfYear: Math.floor((new Date(`${series[dateIndex].date}T00:00:00`) - new Date(`${series[dateIndex].date.slice(0, 4)}-01-01T00:00:00`)) / 86400000) + 1,
+    oneDay: finiteOr(safeRatio(prior)),
+    threeDay: finiteOr(safeRatio(three)),
+    fiveDay: finiteOr(safeRatio(five)),
+    twentyDay: finiteOr(safeRatio(twenty)),
+    dayOfYear: Math.floor((new Date(`${current.date}T00:00:00`) - new Date(`${current.date.slice(0, 4)}-01-01T00:00:00`)) / 86400000) + 1,
   };
 }
 
@@ -389,45 +395,55 @@ function tickerNumber(symbol) {
 }
 
 function fibonacciLike(value) {
-  return [1, 2, 3, 5, 8, 13, 21, 34, 55, 89].some((n) => value % n === 0);
+  return [5, 8, 13, 21, 34, 55, 89].some((n) => value % n === 0);
 }
 
 function atrRatio(asset, dateIndex, window = 14) {
   const series = prices[asset.symbol];
+  if (!series?.length) return 0;
   const start = Math.max(1, dateIndex - window + 1);
   const ranges = [];
   for (let i = start; i <= dateIndex; i += 1) {
     const bar = series[i];
-    const prevClose = series[i - 1].adjustedClose;
+    const prevClose = finiteOr(series[i - 1]?.adjustedClose, bar?.adjustedClose ?? 1);
     const trueRange = Math.max(
-      bar.high - bar.low,
-      Math.abs(bar.high - prevClose),
-      Math.abs(bar.low - prevClose),
+      finiteOr(bar?.high - bar?.low),
+      Math.abs(finiteOr(bar?.high, prevClose) - prevClose),
+      Math.abs(finiteOr(bar?.low, prevClose) - prevClose),
     );
-    ranges.push(trueRange / bar.adjustedClose);
+    const close = finiteOr(bar?.adjustedClose, prevClose);
+    ranges.push(close > 0 ? trueRange / close : 0);
   }
-  return average(ranges);
+  return finiteOr(average(ranges));
 }
 
 function rsi(asset, dateIndex, window = 14) {
   const series = prices[asset.symbol];
+  if (!series?.length || dateIndex <= 0) return 50;
   const start = Math.max(1, dateIndex - window + 1);
   let gains = 0;
   let losses = 0;
   for (let i = start; i <= dateIndex; i += 1) {
-    const change = series[i].adjustedClose / series[i - 1].adjustedClose - 1;
+    const prior = finiteOr(series[i - 1]?.adjustedClose, series[i]?.adjustedClose ?? 1);
+    const close = finiteOr(series[i]?.adjustedClose, prior);
+    const change = prior > 0 ? close / prior - 1 : 0;
     if (change >= 0) gains += change;
     else losses += Math.abs(change);
   }
+  if (gains === 0 && losses === 0) return 50;
   if (losses === 0) return 100;
   const rs = gains / losses;
-  return 100 - (100 / (1 + rs));
+  return finiteOr(100 - (100 / (1 + rs)), 50);
 }
 
 function recentHigh(asset, dateIndex, window = 20) {
   const series = prices[asset.symbol];
+  const current = series?.[dateIndex] || series?.[0];
+  if (!current) return 0;
   const start = Math.max(0, dateIndex - window);
-  return Math.max(...series.slice(start, dateIndex).map((bar) => bar.high));
+  const priorHighs = series.slice(start, dateIndex).map((bar) => bar.high).filter(Number.isFinite);
+  if (!priorHighs.length) return finiteOr(current.high ?? current.adjustedClose ?? current.close, 0);
+  return finiteOr(Math.max(...priorHighs), finiteOr(current.high ?? current.adjustedClose ?? current.close, 0));
 }
 
 function omenDirection(oracle, asset, date, dateIndex) {
@@ -503,8 +519,9 @@ function omenDirection(oracle, asset, date, dateIndex) {
     if (n === 94) score = -context.fiveDay;
     if (n === 95) {
       const atr = atrRatio(asset, dateIndex, 14);
-      score = atr < asset.vol * 1.25 ? 0.12 : -0.12;
-      rawOutput = `ATR cloud ${(atr * 100).toFixed(2)}%`;
+      const longAtr = atrRatio(asset, dateIndex, 60);
+      score = finiteOr((longAtr - atr) * 18);
+      rawOutput = `ATR cloud short ${(atr * 100).toFixed(2)}% / long ${(longAtr * 100).toFixed(2)}%`;
     }
     if (n === 96) {
       const ma20 = average(prices[asset.symbol].slice(Math.max(0, dateIndex - 19), dateIndex + 1).map((bar) => bar.adjustedClose));

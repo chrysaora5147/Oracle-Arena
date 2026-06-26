@@ -1,6 +1,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 
 function hashString(input) {
   let h = 2166136261;
@@ -290,4 +291,231 @@ assert.strictEqual(canDrawLineSeries([]), false);
 assert.strictEqual(canDrawLineSeries([{ points: [] }, { points: [{ value: NaN }] }]), false);
 assert.strictEqual(canDrawLineSeries([{ points: [{ value: 1 }, { value: 1.01 }] }]), true);
 
-console.log(`Oracle Arena verification passed. Pure random BUY ratio: ${(pureRandomBuyRatio * 100).toFixed(1)}%.`);
+function loadAppAuditApi() {
+  const sandbox = {
+    console,
+    fetch: async () => ({ ok: false, text: async () => "" }),
+    localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+    window: { devicePixelRatio: 1, innerWidth: 1200, innerHeight: 800 },
+    document: {
+      getElementById: () => ({ innerHTML: "", textContent: "", addEventListener: () => undefined, classList: { toggle: () => undefined } }),
+      querySelectorAll: () => [],
+      body: { appendChild: () => undefined, addEventListener: () => undefined },
+      createElement: () => ({ click: () => undefined, remove: () => undefined, style: {} }),
+    },
+    requestAnimationFrame: () => undefined,
+    URL: { createObjectURL: () => "", revokeObjectURL: () => undefined },
+    Blob: function Blob() {},
+    FileReader: function FileReader() {},
+    alert: () => undefined,
+    confirm: () => true,
+  };
+  const source = appSource.replace(/\ninitApp\(\);\s*$/, `
+globalThis.__oracleArenaAudit = {
+  ASSETS,
+  FAMILY_NAMES,
+  makeOracles,
+  businessDays,
+  generatePrices,
+  fibonacciLike,
+  priceContext,
+  atrRatio,
+  rsi,
+  recentHigh,
+  omenDirection,
+  setEnvironment(nextDays, nextPrices) {
+    days = nextDays;
+    prices = nextPrices;
+    oracles = makeOracles();
+  },
+  getOracles() { return oracles; },
+  getPrices() { return prices; },
+};
+`);
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox, { filename: "app.js" });
+  return sandbox.__oracleArenaAudit;
+}
+
+function runOracleSignalAudit() {
+  const api = loadAppAuditApi();
+  const auditDays = api.businessDays("2021-01-04", "2026-06-25");
+  const auditPrices = api.generatePrices(auditDays);
+  api.setEnvironment(auditDays, auditPrices);
+  const appOracles = api.getOracles();
+  assert.strictEqual(appOracles.length, 100);
+  assert.strictEqual(new Set(appOracles.map((oracle) => oracle.id)).size, 100);
+  assert.strictEqual(new Set(appOracles.map((oracle) => oracle.name)).size, 100);
+
+  const fibonacciTrueCount = Array.from({ length: 366 }, (_, index) => index + 1)
+    .filter((day) => api.fibonacciLike(day)).length;
+  assert.ok(fibonacciTrueCount > 0 && fibonacciTrueCount < 366, `fibonacciLike true count ${fibonacciTrueCount}`);
+  assert.ok(fibonacciTrueCount >= 10 && fibonacciTrueCount <= 200, `fibonacciLike true count should be non-extreme, got ${fibonacciTrueCount}`);
+
+  const suspicious = [];
+  const assetReports = [];
+  const combinedByOracle = new Map();
+  const indicatorFailures = [];
+  const warmup = 20;
+
+  for (const oracle of appOracles) {
+    combinedByOracle.set(oracle.id, {
+      oracle,
+      buyCount: 0,
+      cashCount: 0,
+      totalCount: 0,
+      assetRatios: {},
+    });
+
+    for (const asset of api.ASSETS) {
+      const stats = {
+        oracle,
+        asset,
+        buyCount: 0,
+        cashCount: 0,
+        totalCount: 0,
+        minConfidence: Infinity,
+        maxConfidence: -Infinity,
+        invalidDirectionCount: 0,
+        invalidSignalCount: 0,
+        invalidPositionSizeCount: 0,
+        invalidConfidenceCount: 0,
+        emptyRawOutputCount: 0,
+        emptyInterpretationCount: 0,
+      };
+
+      for (let dateIndex = warmup; dateIndex < auditDays.length - 1; dateIndex += 1) {
+        const prediction = api.omenDirection(oracle, asset, auditDays[dateIndex], dateIndex);
+        stats.totalCount += 1;
+        stats.buyCount += prediction.signal === "BUY" ? 1 : 0;
+        stats.cashCount += prediction.signal === "CASH" ? 1 : 0;
+        stats.invalidDirectionCount += ["UP", "DOWN"].includes(prediction.direction) ? 0 : 1;
+        stats.invalidSignalCount += ["BUY", "CASH"].includes(prediction.signal) ? 0 : 1;
+        stats.invalidPositionSizeCount += [0, 1].includes(prediction.position_size) ? 0 : 1;
+        stats.invalidConfidenceCount += Number.isFinite(prediction.confidence) && prediction.confidence >= 0.50 && prediction.confidence <= 0.75 ? 0 : 1;
+        stats.emptyRawOutputCount += typeof prediction.raw_output === "string" && prediction.raw_output.trim() ? 0 : 1;
+        stats.emptyInterpretationCount += typeof prediction.interpretation === "string" && prediction.interpretation.trim() ? 0 : 1;
+        stats.minConfidence = Math.min(stats.minConfidence, prediction.confidence);
+        stats.maxConfidence = Math.max(stats.maxConfidence, prediction.confidence);
+
+        if (oracle.index === 69) assert.strictEqual(prediction.confidence, 0.5);
+      }
+
+      const buyRatio = stats.buyCount / stats.totalCount;
+      stats.buyRatio = buyRatio;
+      assetReports.push(stats);
+
+      const combined = combinedByOracle.get(oracle.id);
+      combined.buyCount += stats.buyCount;
+      combined.cashCount += stats.cashCount;
+      combined.totalCount += stats.totalCount;
+      combined.assetRatios[asset.symbol] = buyRatio;
+
+      const schemaErrors = [
+        stats.invalidDirectionCount,
+        stats.invalidSignalCount,
+        stats.invalidPositionSizeCount,
+        stats.invalidConfidenceCount,
+        stats.emptyRawOutputCount,
+        stats.emptyInterpretationCount,
+      ].reduce((sum, count) => sum + count, 0);
+
+      let reason = "";
+      if (stats.totalCount === 0) reason = "no predictions";
+      else if (schemaErrors) reason = "invalid output schema";
+      else if (stats.buyCount === stats.totalCount) reason = "constant BUY";
+      else if (stats.cashCount === stats.totalCount) reason = "constant CASH";
+      else if (buyRatio > 0.95) reason = "BUY ratio > 95%";
+      else if (buyRatio < 0.05) reason = "BUY ratio < 5%";
+      if (reason) suspicious.push({ ...stats, reason });
+
+      assert.ok(stats.totalCount > 0);
+      assert.strictEqual(schemaErrors, 0, `${oracle.index} ${oracle.name} ${asset.symbol} schema errors`);
+      assert.ok(buyRatio > 0 && buyRatio < 1, `${oracle.index} ${oracle.name} ${asset.symbol} constant signal`);
+      assert.ok(buyRatio >= 0.05 && buyRatio <= 0.95, `${oracle.index} ${oracle.name} ${asset.symbol} extreme BUY ratio ${buyRatio}`);
+    }
+  }
+
+  const oracle18Reports = assetReports.filter((report) => report.oracle.index === 18);
+  assert.strictEqual(oracle18Reports.length, 3);
+  oracle18Reports.forEach((report) => {
+    assert.ok(report.buyCount > 0 && report.cashCount > 0, `#18 must have BUY and CASH for ${report.asset.symbol}`);
+  });
+
+  const oracle69Reports = assetReports.filter((report) => report.oracle.index === 69);
+  const oracle69BuyRatio = oracle69Reports.reduce((sum, report) => sum + report.buyCount, 0)
+    / oracle69Reports.reduce((sum, report) => sum + report.totalCount, 0);
+  assert.ok(oracle69BuyRatio >= 0.40 && oracle69BuyRatio <= 0.60, `#69 BUY ratio ${oracle69BuyRatio}`);
+  assert.strictEqual(appOracles.find((oracle) => oracle.index === 69).usesPriceData, false);
+
+  const combinedSuspicious = [];
+  for (const combined of combinedByOracle.values()) {
+    const buyRatio = combined.buyCount / combined.totalCount;
+    if (combined.buyCount === combined.totalCount) combinedSuspicious.push({ combined, reason: "combined constant BUY" });
+    if (combined.cashCount === combined.totalCount) combinedSuspicious.push({ combined, reason: "combined constant CASH" });
+    if (Object.values(combined.assetRatios).every((ratio) => ratio === 1)) combinedSuspicious.push({ combined, reason: "all assets constant BUY" });
+    if (Object.values(combined.assetRatios).every((ratio) => ratio === 0)) combinedSuspicious.push({ combined, reason: "all assets constant CASH" });
+    assert.ok(buyRatio > 0 && buyRatio < 1, `${combined.oracle.index} ${combined.oracle.name} combined constant signal`);
+  }
+  assert.strictEqual(combinedSuspicious.length, 0);
+
+  for (const asset of api.ASSETS) {
+    for (let dateIndex = 0; dateIndex < auditDays.length; dateIndex += 1) {
+      const context = api.priceContext(asset, dateIndex);
+      const indicators = [
+        context.close,
+        context.oneDay,
+        context.threeDay,
+        context.fiveDay,
+        context.twentyDay,
+        context.dayOfYear,
+        api.atrRatio(asset, dateIndex),
+        api.rsi(asset, dateIndex),
+        api.recentHigh(asset, dateIndex),
+      ];
+      if (!indicators.every(Number.isFinite)) {
+        indicatorFailures.push({ asset: asset.symbol, dateIndex, indicators });
+      }
+    }
+  }
+  assert.deepStrictEqual(indicatorFailures, []);
+
+  const riskyReports = assetReports.filter((report) => report.oracle.index >= 91 && report.oracle.index <= 100);
+  riskyReports.forEach((report) => {
+    assert.ok(report.buyRatio >= 0.05 && report.buyRatio <= 0.95, `#${report.oracle.index} ${report.asset.symbol} chart-shadow extreme`);
+  });
+
+  const riskySource = appSource.slice(appSource.indexOf("function priceContext"), appSource.indexOf("function maxDrawdown"));
+  const riskyPatterns = [
+    /%\s*1\s*={2,3}\s*0/,
+    /\[[^\]]*\b1\b[^\]]*\]\.some\([^)]*%\s*\w+\s*={2,3}\s*0/s,
+    /\[\s*dateIndex\s*\+\s*1\s*\]/,
+    /Math\.max\(\s*\.\.\.[^)]+slice\([^)]*\)\.map/s,
+  ];
+  riskyPatterns.forEach((pattern) => {
+    assert.ok(!pattern.test(riskySource), `Risky oracle-rule pattern found: ${pattern}`);
+  });
+
+  const reportLines = assetReports.map((report) => {
+    const buyPct = (report.buyRatio * 100).toFixed(1);
+    const cashPct = (100 - report.buyRatio * 100).toFixed(1);
+    return `#${String(report.oracle.index).padStart(3, "0")} ${report.oracle.name} | ${report.asset.symbol} BUY ${buyPct}% CASH ${cashPct}% OK`;
+  });
+
+  console.log("Oracle Signal Audit");
+  console.log(reportLines.join("\n"));
+  if (suspicious.length) {
+    console.log("Suspicious BUY ratio:");
+    suspicious.forEach((item) => {
+      console.log(`#${String(item.oracle.index).padStart(3, "0")} ${item.oracle.name} | ${item.oracle.family} | ${item.asset.symbol} | BUY ${item.buyCount} / CASH ${item.cashCount} | ${(item.buyRatio * 100).toFixed(1)}% | ${item.reason}`);
+    });
+  } else {
+    console.log("Oracle signal audit passed. No constant BUY/CASH oracles found.");
+    console.log("No oracle has BUY ratio > 95% or < 5%.");
+  }
+
+  return { oracle69BuyRatio, fibonacciTrueCount, suspiciousCount: suspicious.length };
+}
+
+const audit = runOracleSignalAudit();
+console.log(`Oracle Arena verification passed. Pure random BUY ratio: ${(audit.oracle69BuyRatio * 100).toFixed(1)}%. Fibonacci true days/year: ${audit.fibonacciTrueCount}.`);
