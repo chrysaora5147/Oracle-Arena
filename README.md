@@ -68,7 +68,7 @@ GitHub Actions runs `.github/workflows/update-prices.yml` automatically on weekd
 4. Pushes to `main`.
 5. Lets Vercel's Git integration redeploy the static site from the new CSV snapshot.
 
-This is a daily snapshot update, not a real-time price feed.
+This is a daily snapshot update, not a real-time price feed. The website does not pull live prices directly from the browser; it updates when GitHub Actions commits a new CSV snapshot and Vercel redeploys.
 
 ## Daily Tournament Workflow
 
@@ -103,6 +103,7 @@ The deployed site uses the committed CSV snapshot. The included GitHub Actions w
 - CASH receives `0`.
 - SHORT is not used.
 - Benchmark is buy-and-hold over the same window.
+- Buy-and-hold benchmark is reported separately from oracle strategy returns.
 - UP is correct when asset return is positive.
 - DOWN is correct when asset return is negative.
 - Exact zero-return days are treated as ties and excluded from accuracy.
@@ -110,6 +111,9 @@ The deployed site uses the committed CSV snapshot. The included GitHub Actions w
 - Sharpe uses daily strategy returns annualized by `sqrt(252)`.
 - Exposure is BUY days divided by prediction days.
 - Grand Score combines return, accuracy, drawdown, and consistency.
+- Backtest Grand return is the average of the Stock, Tech, and Gold league returns. It is a tournament summary, not a tradable portfolio that compounds SPY, QQQ, and GLD sequentially.
+- Forward Grand follows the same rule: resolve each league first, then average Stock, Tech, and Gold league performance.
+- Oracle #69, `ปู่สุ่มบริสุทธิ์`, is the pure random baseline. It uses a deterministic 50/50 seed, skips non-price-data bias, and always reports confidence `0.50`.
 
 ## Forward Test Notes
 
@@ -119,6 +123,7 @@ The deployed site uses the committed CSV snapshot. The included GitHub Actions w
 - Pending predictions resolve only when both prediction-date and next-trading-date prices exist.
 - Resolution adds `actualReturn`, `benchmarkReturn`, `strategyReturn`, `correct`, `resultDate`, and `resolvedAt`.
 - Forward leaderboard is separate from backtest and uses resolved predictions only.
+- Forward Grand is separate from Backtest Grand and uses only resolved forward predictions.
 - Export JSON backups regularly. localStorage is browser-specific and can be cleared.
 
 ## Champion Archive

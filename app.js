@@ -65,9 +65,9 @@ const state = {
   forwardRange: "All Forward",
 };
 
-const APP_TODAY = "2026-06-26";
 const FORWARD_KEY = "oracle-arena-forward-log-v1";
 const MIN_BACKTEST_DAYS = 80;
+const EPS = 1e-10;
 
 let oracles = [];
 let days = [];
@@ -104,12 +104,36 @@ function normal(seed) {
 }
 
 function fmtPct(value, digits = 1) {
+  if (!Number.isFinite(value)) return "—";
   const sign = value > 0 ? "+" : "";
   return `${sign}${(value * 100).toFixed(digits)}%`;
 }
 
 function fmtNum(value, digits = 2) {
-  return Number(value).toFixed(digits);
+  return Number.isFinite(value) ? Number(value).toFixed(digits) : "—";
+}
+
+function metricLabel(metric) {
+  return {
+    grandScore: "Grand Score",
+    totalReturn: "Total Return",
+    accuracy: "Accuracy",
+    maxDrawdown: "Max Drawdown",
+    sharpe: "Sharpe",
+  }[metric] || metric;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function todayString() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function makeOracles() {
@@ -352,16 +376,106 @@ function priceContext(asset, dateIndex) {
   };
 }
 
+function digitsOfNumber(value) {
+  return String(Math.abs(Math.round(value * 100))).split("").map(Number).filter(Number.isFinite);
+}
+
+function sumDigits(value) {
+  return digitsOfNumber(value).reduce((sum, digit) => sum + digit, 0);
+}
+
+function tickerNumber(symbol) {
+  return symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0) - 64, 0);
+}
+
+function fibonacciLike(value) {
+  return [1, 2, 3, 5, 8, 13, 21, 34, 55, 89].some((n) => value % n === 0);
+}
+
+function atrRatio(asset, dateIndex, window = 14) {
+  const series = prices[asset.symbol];
+  const start = Math.max(1, dateIndex - window + 1);
+  const ranges = [];
+  for (let i = start; i <= dateIndex; i += 1) {
+    const bar = series[i];
+    const prevClose = series[i - 1].adjustedClose;
+    const trueRange = Math.max(
+      bar.high - bar.low,
+      Math.abs(bar.high - prevClose),
+      Math.abs(bar.low - prevClose),
+    );
+    ranges.push(trueRange / bar.adjustedClose);
+  }
+  return average(ranges);
+}
+
+function rsi(asset, dateIndex, window = 14) {
+  const series = prices[asset.symbol];
+  const start = Math.max(1, dateIndex - window + 1);
+  let gains = 0;
+  let losses = 0;
+  for (let i = start; i <= dateIndex; i += 1) {
+    const change = series[i].adjustedClose / series[i - 1].adjustedClose - 1;
+    if (change >= 0) gains += change;
+    else losses += Math.abs(change);
+  }
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - (100 / (1 + rs));
+}
+
+function recentHigh(asset, dateIndex, window = 20) {
+  const series = prices[asset.symbol];
+  const start = Math.max(0, dateIndex - window);
+  return Math.max(...series.slice(start, dateIndex).map((bar) => bar.high));
+}
+
 function omenDirection(oracle, asset, date, dateIndex) {
   const bank = OmenBanks[oracle.family];
   const context = priceContext(asset, dateIndex);
+  const isPureRandomGrandpa = oracle.family === "Pendulum & Ritual Random" && oracle.name === "ปู่สุ่มบริสุทธิ์";
   let score = rand(`${date}:${asset.symbol}:${oracle.id}:score`) - 0.5;
   let rawOutput = bank[Math.floor(rand(`${date}:${asset.symbol}:${oracle.id}:omen`) * bank.length)];
 
   if (oracle.family === "Numerology") {
     const digitSum = date.replaceAll("-", "").split("").reduce((sum, x) => sum + Number(x), 0);
-    score = [1, 3, 6, 8].includes(digitSum % 10) ? 0.18 : -0.18;
-    rawOutput = `ผลรวมเลขวันที่ ${digitSum}`;
+    const month = Number(date.slice(5, 7));
+    const lastCloseDigit = digitsOfNumber(context.close).at(-1) ?? 0;
+    const closeDigitSum = sumDigits(context.close);
+    const tickerValue = tickerNumber(asset.symbol);
+    const dateDay = Number(date.slice(8, 10));
+    const ruleIndex = oracle.index;
+    if (ruleIndex === 11) {
+      score = [1, 3, 6, 8].includes(digitSum % 10) ? 0.18 : -0.18;
+      rawOutput = `ผลรวมเลขวันที่ ${digitSum}`;
+    } else if (ruleIndex === 12) {
+      score = [1, 4, 7, 10].includes(month) ? 0.16 : -0.16;
+      rawOutput = `เลขเดือน ${month}`;
+    } else if (ruleIndex === 13) {
+      score = [0, 1, 3, 5, 8].includes(lastCloseDigit) ? 0.16 : -0.16;
+      rawOutput = `เลขท้ายราคาปิด ${lastCloseDigit}`;
+    } else if (ruleIndex === 14) {
+      score = [2, 4, 6, 8].includes(closeDigitSum % 10) ? 0.17 : -0.17;
+      rawOutput = `ผลรวมราคาปิด ${closeDigitSum}`;
+    } else if (ruleIndex === 15) {
+      score = (tickerValue + digitSum) % 2 === 0 ? 0.15 : -0.15;
+      rawOutput = `เลข ticker ${tickerValue}`;
+    } else if (ruleIndex === 16) {
+      score = [1, 2, 3, 5, 8].includes(context.dayOfYear % 10) ? 0.16 : -0.16;
+      rawOutput = `ลำดับวันของปี ${context.dayOfYear}`;
+    } else if (ruleIndex === 17) {
+      score = dateDay % 2 === 1 ? 0.14 : -0.14;
+      rawOutput = `วัน${dateDay % 2 === 1 ? "คี่" : "คู่"} ${dateDay}`;
+    } else if (ruleIndex === 18) {
+      score = fibonacciLike(context.dayOfYear) ? 0.20 : -0.12;
+      rawOutput = `Fibonacci day ${context.dayOfYear}`;
+    } else if (ruleIndex === 19) {
+      score = (context.dayOfYear + tickerValue) % 7 <= 2 ? 0.16 : -0.16;
+      rawOutput = `รอบเลข 7 ค่า ${(context.dayOfYear + tickerValue) % 7}`;
+    } else if (ruleIndex === 20) {
+      score = (digitSum + tickerValue) % 9 <= 3 ? 0.18 : -0.18;
+      rawOutput = `รอบเลข 9 ค่า ${(digitSum + tickerValue) % 9}`;
+    }
   }
 
   if (oracle.family === "Moon & Time") {
@@ -376,7 +490,7 @@ function omenDirection(oracle, asset, date, dateIndex) {
     rawOutput = `Hexagram with ${yangLines} yang lines`;
   }
 
-  if (oracle.family === "Pendulum & Ritual Random" && oracle.name === "ปู่สุ่มบริสุทธิ์") {
+  if (isPureRandomGrandpa) {
     score = rand(`${date}:${asset.symbol}:pure-random-grandpa`) > 0.5 ? 0.01 : -0.01;
     rawOutput = score > 0 ? "เหรียญตกด้านสุริยัน" : "เหรียญตกด้านจันทร์";
   }
@@ -387,19 +501,39 @@ function omenDirection(oracle, asset, date, dateIndex) {
     if (n === 92) score = context.threeDay;
     if (n === 93) score = -context.oneDay;
     if (n === 94) score = -context.fiveDay;
-    if (n === 95) score = Math.abs(context.oneDay) < asset.vol ? 0.12 : -0.12;
-    if (n === 96) score = context.twentyDay;
-    if (n === 97) score = context.fiveDay > 0.03 ? -0.12 : context.fiveDay < -0.03 ? 0.12 : context.fiveDay;
-    if (n === 98) score = context.oneDay;
-    if (n === 99) score = context.close > priceContext(asset, Math.max(0, dateIndex - 10)).close ? 0.18 : -0.18;
+    if (n === 95) {
+      const atr = atrRatio(asset, dateIndex, 14);
+      score = atr < asset.vol * 1.25 ? 0.12 : -0.12;
+      rawOutput = `ATR cloud ${(atr * 100).toFixed(2)}%`;
+    }
+    if (n === 96) {
+      const ma20 = average(prices[asset.symbol].slice(Math.max(0, dateIndex - 19), dateIndex + 1).map((bar) => bar.adjustedClose));
+      score = context.close / ma20 - 1;
+      rawOutput = `MA20 spirit ${context.close >= ma20 ? "above" : "below"}`;
+    }
+    if (n === 97) {
+      const value = rsi(asset, dateIndex, 14);
+      score = value < 35 ? 0.18 : value > 65 ? -0.18 : (50 - value) / 250;
+      rawOutput = `RSI whisper ${value.toFixed(1)}`;
+    }
+    if (n === 98) {
+      const bar = prices[asset.symbol][dateIndex];
+      score = bar.close >= bar.open ? 0.14 : -0.14;
+      rawOutput = bar.close >= bar.open ? "Green candle shadow" : "Red candle shadow";
+    }
+    if (n === 99) {
+      const high = recentHigh(asset, dateIndex, 20);
+      score = context.close > high ? 0.22 : context.twentyDay > 0 ? 0.08 : -0.12;
+      rawOutput = `Breakout gate ${context.close > high ? "open" : "closed"}`;
+    }
     if (n === 100) score = Math.abs(context.threeDay) > asset.vol * 2 ? -context.threeDay : context.threeDay;
   }
 
   const bias = ((oracle.index % 7) - 3) * 0.015 + (asset.symbol === "GLD" ? -0.012 : 0.012);
-  score += oracle.usesPriceData ? 0 : bias;
+  if (!oracle.usesPriceData && !isPureRandomGrandpa) score += bias;
   const direction = score >= 0 ? "UP" : "DOWN";
   const signal = direction === "UP" ? "BUY" : "CASH";
-  const confidence = Math.min(0.75, Math.max(0.5, 0.5 + Math.abs(score) * 0.44));
+  const confidence = isPureRandomGrandpa ? 0.5 : Math.min(0.75, Math.max(0.5, 0.5 + Math.abs(score) * 0.44));
   const interpretation = direction === "UP"
     ? "ลางชี้แรงส่งเชิงบวก ตลาดมีโอกาสเดินหน้าวันถัดไป"
     : "ลางเตือนให้ลดความเสี่ยง ตลาดมีโอกาสพักตัววันถัดไป";
@@ -570,12 +704,15 @@ function computePerformance(oracles, days, startIndex = 20, periodLabel = "All-t
 }
 
 function average(values) {
-  return values.reduce((a, b) => a + b, 0) / values.length;
+  const clean = values.filter(Number.isFinite);
+  return clean.length ? clean.reduce((a, b) => a + b, 0) / clean.length : 0;
 }
 
 function stdev(values) {
-  const avg = average(values);
-  return Math.sqrt(average(values.map((x) => (x - avg) ** 2)));
+  const clean = values.filter(Number.isFinite);
+  if (!clean.length) return 0;
+  const avg = average(clean);
+  return Math.sqrt(average(clean.map((x) => (x - avg) ** 2)));
 }
 
 function normalize(value, min, max) {
@@ -588,8 +725,12 @@ function allRows() {
 }
 
 function sortRows(rows, metric) {
-  const ascending = metric === "maxDrawdown";
-  return [...rows].sort((a, b) => ascending ? b[metric] - a[metric] : b[metric] - a[metric]);
+  // For maxDrawdown, values closer to 0 are better, so descending sort is correct.
+  return [...rows].sort((a, b) => {
+    const av = Number.isFinite(a[metric]) ? a[metric] : -Infinity;
+    const bv = Number.isFinite(b[metric]) ? b[metric] : -Infinity;
+    return bv - av;
+  });
 }
 
 function topRows(league = "Grand", metric = "grandScore", limit = 10) {
@@ -780,7 +921,7 @@ function forwardSummary() {
 }
 
 function currentPredictionDate() {
-  return dataStatus.endDate || APP_TODAY;
+  return dataStatus.endDate || todayString();
 }
 
 function latestForwardBatchDate() {
@@ -793,7 +934,11 @@ function hasBatchForDate(date) {
 }
 
 function pendingResolvableCount() {
-  return forwardLog.filter((p) => p.status === "pending" && resolveForwardPrediction(p, new Date().toISOString())).length;
+  return forwardLog.filter((p) => p.status === "pending" && canResolveForwardPrediction(p)).length;
+}
+
+function canResolveForwardPrediction(prediction) {
+  return resolveForwardPredictionDetailed(prediction, "").resolved;
 }
 
 function suggestedNextAction() {
@@ -874,10 +1019,10 @@ function forwardChampionCards(league) {
   if (!rows.length) return [];
   const row = rows[0];
   return [`
-    <div class="champion-card" data-oracle="${row.oracleId}">
+    <div class="champion-card" data-oracle="${escapeHtml(row.oracleId)}">
       <span class="rank-badge">${league === "Grand" ? "Grand Forward Champion" : `${league} Forward Champion`}</span>
-      <h3>${row.oracleName}</h3>
-      <p class="muted">${row.family} · resolved ${row.resolvedCount}</p>
+      <h3>${escapeHtml(row.oracleName)}</h3>
+      <p class="muted">${escapeHtml(row.family)} · resolved ${row.resolvedCount}</p>
       <strong class="${row.totalReturn >= 0 ? "positive" : "negative"}">${fmtPct(row.totalReturn)}</strong>
     </div>
   `];
@@ -893,12 +1038,13 @@ function renderLeaderboard() {
         ${select("lb-mode", ["Backtest", "Forward Test"], state.leaderboard.mode)}
         ${select("lb-metric", [["grandScore", "Grand Score"], ["totalReturn", "Total Return"], ["accuracy", "Accuracy"], ["maxDrawdown", "Max Drawdown"], ["sharpe", "Sharpe"]], state.leaderboard.metric)}
         ${state.leaderboard.mode === "Forward Test" ? select("fw-oracle-filter", [["All", "All Oracles"], ...oracles.map((o) => [o.id, `${String(o.index).padStart(3, "0")} ${o.name}`])], state.forwardOracle) : ""}
-        ${state.leaderboard.mode === "Forward Test" ? `<input id="fw-search-filter" class="control" value="${state.forwardSearch}" placeholder="Search oracle" />` : ""}
+        ${state.leaderboard.mode === "Forward Test" ? `<input id="fw-search-filter" class="control" value="${escapeHtml(state.forwardSearch)}" placeholder="Search oracle" />` : ""}
         ${state.leaderboard.mode === "Forward Test" ? select("fw-family-filter", ["All", ...FAMILY_NAMES], state.forwardFamily) : ""}
         ${state.leaderboard.mode === "Forward Test" ? select("fw-signal-filter", ["All", "BUY", "CASH"], state.forwardSignal) : ""}
         ${state.leaderboard.mode === "Forward Test" ? select("fw-status-filter", ["Resolved", "Pending", "All"], state.forwardStatus) : ""}
         ${state.leaderboard.mode === "Forward Test" ? select("fw-range-filter", ["All Forward", "Last 30 Resolved Days", "Last 7 Resolved Days"], state.forwardRange) : ""}
       </div>
+      ${state.leaderboard.mode === "Backtest" ? `<p class="muted">Sorted by: ${metricLabel(state.leaderboard.metric)}. Grand Backtest is the average of Stock, Tech, and Gold league results.</p>` : ""}
       ${state.leaderboard.mode === "Forward Test"
         ? forwardLeaderboardPanel()
         : state.leaderboard.league === "Grand" ? grandLeaderboardTable(rows) : leagueLeaderboardTable(rows)}
@@ -1003,6 +1149,7 @@ function forwardLeaderboardPanel() {
         <div class="metric-card"><span class="muted">Storage</span><strong>localStorage</strong></div>
       </div>
       ${dataStatus.mode === "Synthetic Data" ? `<div class="disclaimer">Warning: resolving forward predictions in Synthetic Data mode is for workflow validation only and does not represent real market performance.</div>` : ""}
+      <p class="muted">Sorted by: ${metricLabel(state.leaderboard.metric)}. Grand Forward is the average of Stock, Tech, and Gold league results, not one compounded three-asset portfolio.</p>
       ${state.forwardStatus === "Pending"
         ? predictionLogTable(pendingRows.map((p) => ({ ...p, is_forward: true })))
         : state.leaderboard.league === "Grand" ? forwardGrandLeaderboardTable(rows) : forwardLeaderboardTable(rows)}
@@ -1031,70 +1178,96 @@ function filterForwardLog(rows) {
 }
 
 function computeForwardLeaderboard(rows, league, metric) {
-  const targetRows = rows.filter((p) => p.status === "resolved");
-  const oracleIds = [...new Set(targetRows.map((p) => p.oracle_id))];
+  const oracleIds = [...new Set(rows.map((p) => p.oracle_id))];
   const byOracle = oracleIds.map((oracleId) => {
+    if (league !== "Grand") return computeForwardLeagueRow(rows, oracleId, league);
     const oracle = oracles.find((o) => o.id === oracleId);
-    const scoped = targetRows.filter((p) => p.oracle_id === oracleId);
-    const leagueScoped = league === "Grand" ? scoped : scoped.filter((p) => p.league === league);
-    if (!leagueScoped.length) return null;
-    const equityCurve = [1];
-    const benchmarkCurve = [1];
-    let buyDays = 0;
-    let cashDays = 0;
-    let winDays = 0;
-    let tieDays = 0;
-    const strategyReturns = [];
-    const benchmarkReturns = [];
-    leagueScoped
-      .slice()
-      .sort((a, b) => `${a.resultDate}${a.asset}`.localeCompare(`${b.resultDate}${b.asset}`))
-      .forEach((p) => {
-        const strategyReturn = Number(p.strategyReturn ?? p.strategy_return ?? 0);
-        const benchmarkReturn = Number(p.benchmarkReturn ?? p.benchmark_return ?? p.actualReturn ?? p.actual_return ?? 0);
-        strategyReturns.push(strategyReturn);
-        benchmarkReturns.push(benchmarkReturn);
-        equityCurve.push(equityCurve[equityCurve.length - 1] * (1 + strategyReturn));
-        benchmarkCurve.push(benchmarkCurve[benchmarkCurve.length - 1] * (1 + benchmarkReturn));
-        buyDays += p.signal === "BUY" ? 1 : 0;
-        cashDays += p.signal === "CASH" ? 1 : 0;
-        winDays += p.correct ? 1 : 0;
-        tieDays += p.correct === null ? 1 : 0;
-      });
-    const totalDays = leagueScoped.length;
-    const scoredDays = totalDays - tieDays;
-    const pendingCount = rows.filter((p) => p.oracle_id === oracleId && p.status === "pending" && (league === "Grand" || p.league === league)).length;
+    const leagueRows = ASSETS
+      .map((asset) => computeForwardLeagueRow(rows, oracleId, asset.league))
+      .filter(Boolean);
+    if (!leagueRows.length) return null;
+    const totalReturn = average(leagueRows.map((row) => row.totalReturn));
+    const benchmarkReturn = average(leagueRows.map((row) => row.benchmarkReturn));
+    const accuracy = average(leagueRows.map((row) => row.accuracy));
+    const exposure = average(leagueRows.map((row) => row.exposure));
+    const maxDd = average(leagueRows.map((row) => row.maxDrawdown));
     return {
       oracleId,
-      oracleName: oracle?.name || leagueScoped[0].oracle_name,
-      family: oracle?.family || "",
-      league,
-      asset: league === "Grand" ? "SPY/QQQ/GLD" : leagueScoped[0].asset,
-      totalReturn: equityCurve[equityCurve.length - 1] - 1,
-      benchmarkReturn: benchmarkCurve[benchmarkCurve.length - 1] - 1,
-      excessReturn: equityCurve[equityCurve.length - 1] - benchmarkCurve[benchmarkCurve.length - 1],
-      accuracy: scoredDays ? winDays / scoredDays : 0,
-      exposure: totalDays ? buyDays / totalDays : 0,
-      maxDrawdown: maxDrawdown(equityCurve),
-      sharpe: sharpe(strategyReturns),
-      buyDays,
-      cashDays,
-      resolvedCount: totalDays,
-      pendingCount,
-      latestResolvedDate: leagueScoped.map((p) => p.resultDate || p.result_date).filter(Boolean).sort().at(-1) || "",
-      stockReturn: compoundReturn(scoped.filter((p) => p.league === "Stock League").map((p) => Number(p.strategyReturn ?? p.strategy_return ?? 0))),
-      techReturn: compoundReturn(scoped.filter((p) => p.league === "Tech League").map((p) => Number(p.strategyReturn ?? p.strategy_return ?? 0))),
-      goldReturn: compoundReturn(scoped.filter((p) => p.league === "Gold League").map((p) => Number(p.strategyReturn ?? p.strategy_return ?? 0))),
-      grandForwardScore: (equityCurve[equityCurve.length - 1] - 1) * 0.55 + (scoredDays ? winDays / scoredDays : 0) * 0.35 + (1 + maxDrawdown(equityCurve)) * 0.10,
+      oracleName: oracle?.name || leagueRows[0].oracleName,
+      family: oracle?.family || leagueRows[0].family || "",
+      league: "Grand",
+      asset: "Stock/Tech/Gold avg",
+      totalReturn,
+      benchmarkReturn,
+      excessReturn: totalReturn - benchmarkReturn,
+      accuracy,
+      exposure,
+      maxDrawdown: maxDd,
+      sharpe: average(leagueRows.map((row) => row.sharpe)),
+      buyDays: leagueRows.reduce((sum, row) => sum + row.buyDays, 0),
+      cashDays: leagueRows.reduce((sum, row) => sum + row.cashDays, 0),
+      resolvedCount: leagueRows.reduce((sum, row) => sum + row.resolvedCount, 0),
+      pendingCount: rows.filter((p) => p.oracle_id === oracleId && p.status === "pending").length,
+      latestResolvedDate: leagueRows.map((row) => row.latestResolvedDate).filter(Boolean).sort().at(-1) || "",
+      stockReturn: leagueRows.find((row) => row.league === "Stock League")?.totalReturn ?? 0,
+      techReturn: leagueRows.find((row) => row.league === "Tech League")?.totalReturn ?? 0,
+      goldReturn: leagueRows.find((row) => row.league === "Gold League")?.totalReturn ?? 0,
+      grandForwardScore: totalReturn * 0.55 + accuracy * 0.35 + (1 + maxDd) * 0.10,
     };
   }).filter(Boolean);
-
   const sortMetric = metric === "grandScore" ? "grandForwardScore" : metric;
   return sortRows(byOracle, sortMetric).slice(0, 50);
 }
 
-function compoundReturn(returns) {
-  return returns.reduce((equity, value) => equity * (1 + value), 1) - 1;
+function computeForwardLeagueRow(rows, oracleId, league) {
+  const oracle = oracles.find((o) => o.id === oracleId);
+  const leagueScoped = rows
+    .filter((p) => p.status === "resolved" && p.oracle_id === oracleId && p.league === league)
+    .slice()
+    .sort((a, b) => `${a.resultDate || a.result_date || ""}${a.asset || ""}`.localeCompare(`${b.resultDate || b.result_date || ""}${b.asset || ""}`));
+  if (!leagueScoped.length) return null;
+  const equityCurve = [1];
+  const benchmarkCurve = [1];
+  let buyDays = 0;
+  let cashDays = 0;
+  let winDays = 0;
+  let tieDays = 0;
+  const strategyReturns = [];
+  leagueScoped.forEach((p) => {
+    const strategyReturn = Number(p.strategyReturn ?? p.strategy_return ?? 0);
+    const benchmarkReturn = Number(p.benchmarkReturn ?? p.benchmark_return ?? p.actualReturn ?? p.actual_return ?? 0);
+    strategyReturns.push(Number.isFinite(strategyReturn) ? strategyReturn : 0);
+    equityCurve.push(equityCurve[equityCurve.length - 1] * (1 + (Number.isFinite(strategyReturn) ? strategyReturn : 0)));
+    benchmarkCurve.push(benchmarkCurve[benchmarkCurve.length - 1] * (1 + (Number.isFinite(benchmarkReturn) ? benchmarkReturn : 0)));
+    buyDays += p.signal === "BUY" ? 1 : 0;
+    cashDays += p.signal === "CASH" ? 1 : 0;
+    winDays += p.correct === true ? 1 : 0;
+    tieDays += p.correct === null ? 1 : 0;
+  });
+  const totalDays = leagueScoped.length;
+  const scoredDays = totalDays - tieDays;
+  const totalReturn = equityCurve[equityCurve.length - 1] - 1;
+  const benchmarkReturn = benchmarkCurve[benchmarkCurve.length - 1] - 1;
+  const maxDd = maxDrawdown(equityCurve);
+  return {
+    oracleId,
+    oracleName: oracle?.name || leagueScoped[0].oracle_name,
+    family: oracle?.family || leagueScoped[0].family || "",
+    league,
+    asset: leagueScoped[0].asset,
+    totalReturn,
+    benchmarkReturn,
+    excessReturn: totalReturn - benchmarkReturn,
+    accuracy: scoredDays ? winDays / scoredDays : 0,
+    exposure: totalDays ? buyDays / totalDays : 0,
+    maxDrawdown: maxDd,
+    sharpe: sharpe(strategyReturns),
+    buyDays,
+    cashDays,
+    resolvedCount: totalDays,
+    pendingCount: rows.filter((p) => p.oracle_id === oracleId && p.status === "pending" && p.league === league).length,
+    latestResolvedDate: leagueScoped.map((p) => p.resultDate || p.result_date).filter(Boolean).sort().at(-1) || "",
+  };
 }
 
 function forwardGrandLeaderboardTable(rows) {
@@ -1106,10 +1279,10 @@ function forwardGrandLeaderboardTable(rows) {
         </tr></thead>
         <tbody>
           ${rows.map((row, idx) => `
-            <tr data-profile="${row.oracleId}">
+            <tr data-profile="${escapeHtml(row.oracleId)}">
               <td><span class="rank-badge">${idx + 1}</span></td>
-              <td><strong>${row.oracleName}</strong><br><span class="muted">${row.asset}</span></td>
-              <td>${row.family}</td>
+              <td><strong>${escapeHtml(row.oracleName)}</strong><br><span class="muted">${escapeHtml(row.asset)}</span></td>
+              <td>${escapeHtml(row.family)}</td>
               <td class="right">${fmtNum(row.grandForwardScore * 100, 1)}</td>
               <td class="right ${row.totalReturn >= 0 ? "positive" : "negative"}">${fmtPct(row.totalReturn)}</td>
               <td class="right">${fmtPct(row.accuracy)}</td>
@@ -1118,7 +1291,7 @@ function forwardGrandLeaderboardTable(rows) {
               <td class="right">${fmtPct(row.goldReturn)}</td>
               <td class="right">${row.resolvedCount.toLocaleString()}</td>
               <td class="right">${row.pendingCount.toLocaleString()}</td>
-              <td>${row.latestResolvedDate || "None"}</td>
+              <td>${escapeHtml(row.latestResolvedDate || "None")}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -1136,11 +1309,11 @@ function forwardLeaderboardTable(rows) {
         </tr></thead>
         <tbody>
           ${rows.map((row, idx) => `
-            <tr data-profile="${row.oracleId}">
+            <tr data-profile="${escapeHtml(row.oracleId)}">
               <td><span class="rank-badge">${idx + 1}</span></td>
-              <td><strong>${row.oracleName}</strong><br><span class="muted">${row.asset}</span></td>
-              <td>${row.family}</td>
-              <td>${row.league}</td>
+              <td><strong>${escapeHtml(row.oracleName)}</strong><br><span class="muted">${escapeHtml(row.asset)}</span></td>
+              <td>${escapeHtml(row.family)}</td>
+              <td>${escapeHtml(row.league)}</td>
               <td class="right ${row.totalReturn >= 0 ? "positive" : "negative"}">${fmtPct(row.totalReturn)}</td>
               <td class="right ${row.benchmarkReturn >= 0 ? "positive" : "negative"}">${fmtPct(row.benchmarkReturn)}</td>
               <td class="right ${row.excessReturn >= 0 ? "positive" : "negative"}">${fmtPct(row.excessReturn)}</td>
@@ -1238,12 +1411,14 @@ function renderProfile() {
   const oracle = oracles.find((o) => o.id === state.oracleId) || oracles[0];
   const rows = perf.leagueRows.filter((row) => row.oracleId === oracle.id);
   const grand = perf.grandRows.find((row) => row.oracleId === oracle.id);
+  const grandRank = sortRows(perf.grandRows, "grandScore").findIndex((row) => row.oracleId === oracle.id) + 1;
   const sample = perf.predictions.find((p) => p.oracle_id === oracle.id) || omenDirection(oracle, ASSETS[0], days[80], 80);
   const oraclePredictions = perf.predictions.filter((p) => p.oracle_id === oracle.id).slice(0, 80);
   const randomOracle = oracles.find((o) => o.name === "ปู่สุ่มบริสุทธิ์");
   const randomGrand = perf.grandRows.find((row) => row.oracleId === randomOracle?.id);
-  const beatsRandom = randomGrand ? grand.grandScore > randomGrand.grandScore : false;
-  const benchmarkWins = rows.filter((row) => row.totalReturn > row.benchmarkReturn).length;
+  const beatsRandom = randomGrand ? grand.grandScore > randomGrand.grandScore + EPS : false;
+  const randomComparison = oracle.id === randomOracle?.id ? "Pure random baseline" : beatsRandom ? "Yes" : "No";
+  const benchmark = benchmarkRecord(rows);
   const forwardRows = computeForwardLeaderboard(forwardLog, "Grand", "totalReturn").filter((row) => row.oracleId === oracle.id);
   const forwardLeagueRows = ASSETS.map((asset) => computeForwardLeaderboard(forwardLog, asset.league, "totalReturn").find((row) => row.oracleId === oracle.id)).filter(Boolean);
   const badges = oracleBadges(oracle, rows, grand, forwardRows[0]);
@@ -1269,8 +1444,8 @@ function renderProfile() {
             <div><span>Grand score</span><strong>${fmtNum(grand.grandScore * 100, 1)}</strong></div>
             <div><span>Avg return</span><strong class="${grand.totalReturn >= 0 ? "positive" : "negative"}">${fmtPct(grand.totalReturn)}</strong></div>
             <div><span>BUY / CASH</span><strong>${grand.buyDays.toLocaleString()} / ${grand.cashDays.toLocaleString()}</strong></div>
-            <div><span>Beat benchmark</span><strong>${benchmarkWins}/3 leagues</strong></div>
-            <div><span>Beat pure random</span><strong>${beatsRandom ? "Yes" : "No"}</strong></div>
+            <div><span>Benchmark result</span><strong>${benchmark.wins}W / ${benchmark.ties}T / ${benchmark.losses}L</strong></div>
+            <div><span>Beat pure random</span><strong>${randomComparison}</strong></div>
           </div>
         </div>
         <div class="data-panel">
@@ -1288,7 +1463,7 @@ function renderProfile() {
       <section>
         <div class="data-panel">
           <h2>Grand Summary</h2>
-          ${grandLeaderboardTable([grand])}
+          ${profileGrandSummaryTable(grand, grandRank)}
         </div>
         <div class="data-panel">
           <h2>League Statistics</h2>
@@ -1316,6 +1491,41 @@ function renderProfile() {
   bindSelect("oracle-select", (value) => state.oracleId = value);
   requestAnimationFrame(() => drawProfileChart(oracle.id));
   requestAnimationFrame(() => drawForwardProfileChart(oracle.id));
+}
+
+function benchmarkRecord(rows) {
+  return rows.reduce((record, row) => {
+    const diff = row.totalReturn - row.benchmarkReturn;
+    if (diff > EPS) record.wins += 1;
+    else if (diff < -EPS) record.losses += 1;
+    else record.ties += 1;
+    return record;
+  }, { wins: 0, ties: 0, losses: 0 });
+}
+
+function profileGrandSummaryTable(row, rank) {
+  const byLeague = Object.fromEntries(perf.leagueRows.filter((x) => x.oracleId === row.oracleId).map((x) => [x.league, x]));
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Actual Rank</th><th>Oracle</th><th class="right">Grand Score</th><th class="right">Avg Return</th><th class="right">Avg Accuracy</th><th class="right">Stock</th><th class="right">Tech</th><th class="right">Gold</th>
+        </tr></thead>
+        <tbody>
+          <tr data-profile="${escapeHtml(row.oracleId)}">
+            <td><span class="rank-badge">#${rank || "—"}</span></td>
+            <td><strong>${escapeHtml(row.oracleName)}</strong><br><span class="muted">${escapeHtml(row.family)}</span></td>
+            <td class="right">${fmtNum(row.grandScore * 100, 1)}</td>
+            <td class="right ${row.totalReturn >= 0 ? "positive" : "negative"}">${fmtPct(row.totalReturn)}</td>
+            <td class="right">${fmtPct(row.accuracy)}</td>
+            <td class="right">${fmtPct(byLeague["Stock League"]?.totalReturn)}</td>
+            <td class="right">${fmtPct(byLeague["Tech League"]?.totalReturn)}</td>
+            <td class="right">${fmtPct(byLeague["Gold League"]?.totalReturn)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function oracleBadges(oracle, rows, grand, forwardRow) {
@@ -1431,21 +1641,35 @@ function predictionLogTable(rows) {
         <tbody>
           ${rows.map((p) => {
             const oracle = oracles.find((o) => o.id === p.oracle_id);
+            const oracleId = escapeHtml(p.oracle_id);
+            const date = escapeHtml(p.date);
+            const status = escapeHtml(p.status || "pending");
+            const oracleName = escapeHtml(p.oracle_name);
+            const createdAt = escapeHtml(p.createdAt || p.prediction_timestamp || "");
+            const family = escapeHtml(oracle?.family || p.family || "");
+            const league = escapeHtml(p.league);
+            const asset = escapeHtml(p.asset);
+            const rawOutput = escapeHtml(p.raw_output);
+            const interpretation = escapeHtml(p.interpretation);
+            const direction = ["UP", "DOWN"].includes(p.direction) ? p.direction : "";
+            const signal = ["BUY", "CASH"].includes(p.signal) ? p.signal : "";
+            const actualReturn = Number(p.actual_return ?? p.actualReturn);
+            const strategyReturn = Number(p.strategy_return ?? p.strategyReturn);
             return `
-              <tr data-profile="${p.oracle_id}">
-                <td>${p.date}${p.is_forward ? `<br><span class="badge">${p.status || "pending"}</span>` : ""}</td>
-                <td><strong>${p.oracle_name}</strong><br><span class="muted">${p.createdAt || p.prediction_timestamp || ""}</span></td>
-                <td>${oracle?.family || p.family || ""}</td>
-                <td>${p.league}</td>
-                <td>${p.asset}</td>
-                <td>${p.raw_output}</td>
-                <td>${p.interpretation}</td>
-                <td class="${p.direction.toLowerCase()}">${p.direction}</td>
-                <td class="${p.signal.toLowerCase()}">${p.signal}</td>
+              <tr data-profile="${oracleId}">
+                <td>${date}${p.is_forward ? `<br><span class="badge">${status}</span>` : ""}</td>
+                <td><strong>${oracleName}</strong><br><span class="muted">${createdAt}</span></td>
+                <td>${family}</td>
+                <td>${league}</td>
+                <td>${asset}</td>
+                <td>${rawOutput}</td>
+                <td>${interpretation}</td>
+                <td class="${direction.toLowerCase()}">${direction}</td>
+                <td class="${signal.toLowerCase()}">${signal}</td>
                 <td class="right">${fmtPct(p.confidence, 0)}</td>
                 <td class="right">${fmtNum(p.position_size ?? (p.signal === "BUY" ? 1 : 0), 1)}</td>
-                <td class="right ${p.actual_return >= 0 ? "positive" : "negative"}">${p.actual_return == null ? "Pending" : fmtPct(p.actual_return, 2)}</td>
-                <td class="right ${p.strategy_return >= 0 ? "positive" : "negative"}">${p.strategy_return == null ? "Pending" : fmtPct(p.strategy_return, 2)}</td>
+                <td class="right ${actualReturn >= 0 ? "positive" : "negative"}">${Number.isFinite(actualReturn) ? fmtPct(actualReturn, 2) : "Pending"}</td>
+                <td class="right ${strategyReturn >= 0 ? "positive" : "negative"}">${Number.isFinite(strategyReturn) ? fmtPct(strategyReturn, 2) : "Pending"}</td>
                 <td>${p.correct == null ? "Pending" : p.correct ? "Yes" : "No"}</td>
               </tr>
             `;
@@ -1579,10 +1803,10 @@ function exportForwardLog(format) {
       headers.join(","),
       ...forwardLog.map((row) => headers.map((key) => csvCell(row[key])).join(",")),
     ].join("\n");
-    downloadText(`oracle-arena-forward-log-${APP_TODAY}.csv`, csv, "text/csv");
+    downloadText(`oracle-arena-forward-log-${currentPredictionDate()}.csv`, csv, "text/csv");
     return;
   }
-  downloadText(`oracle-arena-forward-log-${APP_TODAY}.json`, JSON.stringify(forwardLog, null, 2), "application/json");
+  downloadText(`oracle-arena-forward-log-${currentPredictionDate()}.json`, JSON.stringify(forwardLog, null, 2), "application/json");
 }
 
 function exportResolvedForwardResults(format) {
@@ -1593,10 +1817,10 @@ function exportResolvedForwardResults(format) {
       headers.join(","),
       ...resolved.map((row) => headers.map((key) => csvCell(row[key])).join(",")),
     ].join("\n");
-    downloadText(`oracle-arena-forward-resolved-${APP_TODAY}.csv`, csv, "text/csv");
+    downloadText(`oracle-arena-forward-resolved-${currentPredictionDate()}.csv`, csv, "text/csv");
     return;
   }
-  downloadText(`oracle-arena-forward-resolved-${APP_TODAY}.json`, JSON.stringify(resolved, null, 2), "application/json");
+  downloadText(`oracle-arena-forward-resolved-${currentPredictionDate()}.json`, JSON.stringify(resolved, null, 2), "application/json");
 }
 
 function exportPendingForwardLog() {
@@ -1751,16 +1975,19 @@ function forwardKey(row) {
 
 function parseCorrectValue(value) {
   if (value === null || value === undefined || value === "") return null;
-  if (value === true || value === "true" || value === "TRUE" || value === "Yes") return true;
-  if (value === false || value === "false" || value === "FALSE" || value === "No") return false;
-  return Boolean(value);
+  if (value === true || value === false) return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "yes", "1", "correct"].includes(normalized)) return true;
+  if (["false", "no", "0", "incorrect"].includes(normalized)) return false;
+  if (["null", "pending", "tie", ""].includes(normalized)) return null;
+  return null;
 }
 
 function select(id, options, value) {
   return `<select id="${id}" class="control">${options.map((option) => {
     const optionValue = Array.isArray(option) ? option[0] : option;
     const label = Array.isArray(option) ? option[1] : option;
-    return `<option value="${optionValue}" ${optionValue === value ? "selected" : ""}>${label}</option>`;
+    return `<option value="${escapeHtml(optionValue)}" ${optionValue === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
   }).join("")}</select>`;
 }
 
@@ -1831,6 +2058,12 @@ function drawLines(canvas, series) {
   const ctx = canvas.getContext("2d");
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, rect.width, rect.height);
+  const cleanSeries = (series || [])
+    .map((s) => ({
+      ...s,
+      points: (s.points || []).filter((p) => p && Number.isFinite(p.value)),
+    }))
+    .filter((s) => s.points.length >= 2);
   ctx.strokeStyle = "rgba(255,255,255,0.09)";
   ctx.lineWidth = 1;
   for (let i = 0; i < 5; i += 1) {
@@ -1841,11 +2074,18 @@ function drawLines(canvas, series) {
     ctx.stroke();
   }
 
-  const allValues = series.flatMap((s) => s.points.map((p) => p.value));
+  if (!cleanSeries.length) {
+    ctx.fillStyle = "#d9d1c6";
+    ctx.font = "13px system-ui";
+    ctx.fillText("Not enough data", 18, rect.height / 2);
+    return;
+  }
+
+  const allValues = cleanSeries.flatMap((s) => s.points.map((p) => p.value));
   const min = Math.min(...allValues);
   const max = Math.max(...allValues);
   const span = Math.max(0.001, max - min);
-  series.forEach((s) => {
+  cleanSeries.forEach((s) => {
     ctx.strokeStyle = s.color;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1858,7 +2098,7 @@ function drawLines(canvas, series) {
     ctx.stroke();
   });
 
-  series.forEach((s, index) => {
+  cleanSeries.forEach((s, index) => {
     ctx.fillStyle = s.color;
     ctx.fillRect(18 + index * 128, rect.height - 16, 10, 3);
     ctx.fillStyle = "#d9d1c6";

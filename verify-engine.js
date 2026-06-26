@@ -1,4 +1,24 @@
 const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+
+function hashString(input) {
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function rand(seed) {
+  return hashString(seed) / 4294967295;
+}
+
+function average(values) {
+  const clean = values.filter(Number.isFinite);
+  return clean.length ? clean.reduce((a, b) => a + b, 0) / clean.length : 0;
+}
 
 function maxDrawdown(equityCurve) {
   let peak = equityCurve[0] || 1;
@@ -16,6 +36,41 @@ function sharpe(returns) {
   const variance = returns.reduce((a, b) => a + (b - avg) ** 2, 0) / returns.length;
   const stdev = Math.sqrt(variance);
   return stdev === 0 ? 0 : (avg / stdev) * Math.sqrt(252);
+}
+
+function parseCorrectValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (value === true || value === false) return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "yes", "1", "correct"].includes(normalized)) return true;
+  if (["false", "no", "0", "incorrect"].includes(normalized)) return false;
+  if (["null", "pending", "tie", ""].includes(normalized)) return null;
+  return null;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function forwardLeagueReturn(rows, league) {
+  return rows
+    .filter((row) => row.status === "resolved" && row.league === league)
+    .reduce((equityValue, row) => equityValue * (1 + row.strategyReturn), 1) - 1;
+}
+
+function forwardGrandAverage(rows) {
+  return average(["Stock League", "Tech League", "Gold League"].map((league) => forwardLeagueReturn(rows, league)));
+}
+
+function canDrawLineSeries(series) {
+  return series
+    .map((s) => ({ points: (s.points || []).filter((p) => Number.isFinite(p.value)) }))
+    .filter((s) => s.points.length >= 2).length > 0;
 }
 
 const prices = [100, 110, 99, 108.9];
@@ -191,4 +246,48 @@ assert.strictEqual(firstBatch.skippedExisting, 0);
 assert.strictEqual(duplicateBatch.generated, 0);
 assert.strictEqual(duplicateBatch.skippedExisting, 300);
 
-console.log("Oracle Arena engine and forward resolver verification passed.");
+const appSource = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+const oracleNamesBlock = appSource.match(/const ORACLE_NAMES = \[([\s\S]*?)\];/);
+assert.ok(oracleNamesBlock, "ORACLE_NAMES block should exist");
+const oracleNames = [...oracleNamesBlock[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+assert.strictEqual(oracleNames.length, 100);
+assert.strictEqual(new Set(oracleNames).size, 100);
+assert.ok(appSource.includes('const confidence = isPureRandomGrandpa ? 0.5'));
+assert.ok(appSource.includes("!isPureRandomGrandpa) score += bias"));
+
+const pureRandomSignals = [];
+const pureRandomDates = Array.from({ length: 260 }, (_, index) => {
+  const d = new Date("2025-01-01T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + index);
+  return d.toISOString().slice(0, 10);
+});
+pureRandomDates.forEach((date) => {
+  assets.forEach((asset) => {
+    const isBuy = rand(`${date}:${asset}:pure-random-grandpa`) > 0.5;
+    pureRandomSignals.push(isBuy ? "BUY" : "CASH");
+  });
+});
+const pureRandomBuyRatio = pureRandomSignals.filter((signal) => signal === "BUY").length / pureRandomSignals.length;
+assert.ok(pureRandomBuyRatio >= 0.40 && pureRandomBuyRatio <= 0.60, `pure random BUY ratio ${pureRandomBuyRatio}`);
+
+assert.strictEqual(parseCorrectValue("true"), true);
+assert.strictEqual(parseCorrectValue("FALSE"), false);
+assert.strictEqual(parseCorrectValue("tie"), null);
+assert.strictEqual(parseCorrectValue("maybe"), null);
+assert.strictEqual(escapeHtml('<img src=x onerror="alert(1)">'), "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+
+const forwardRows = [
+  { status: "resolved", league: "Stock League", strategyReturn: 0.10 },
+  { status: "resolved", league: "Tech League", strategyReturn: 0.20 },
+  { status: "resolved", league: "Gold League", strategyReturn: -0.05 },
+];
+const grandAverage = forwardGrandAverage(forwardRows);
+const sequentialCompound = forwardRows.reduce((acc, row) => acc * (1 + row.strategyReturn), 1) - 1;
+assert.ok(Math.abs(grandAverage - ((0.10 + 0.20 - 0.05) / 3)) < 1e-12);
+assert.ok(Math.abs(grandAverage - sequentialCompound) > 1e-3);
+
+assert.strictEqual(canDrawLineSeries([]), false);
+assert.strictEqual(canDrawLineSeries([{ points: [] }, { points: [{ value: NaN }] }]), false);
+assert.strictEqual(canDrawLineSeries([{ points: [{ value: 1 }, { value: 1.01 }] }]), true);
+
+console.log(`Oracle Arena verification passed. Pure random BUY ratio: ${(pureRandomBuyRatio * 100).toFixed(1)}%.`);
